@@ -9,6 +9,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@600;700;800&display=swap" rel="stylesheet">
     
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    
     <style>
         :root {
             --bg-green: #00B140;
@@ -251,8 +253,6 @@
             opacity: 0.8;
         }
 
-    
-
         .control-bar {
             position: fixed;
             bottom: 40px;
@@ -328,6 +328,44 @@
         .virtual-cursor svg {
             filter: drop-shadow(0px 6px 8px rgba(0, 0, 0, 0.4));
         }
+
+        /* Post-Recording Modal Overlay */
+        .modal-overlay {
+            position: fixed;
+            top: 0; 
+            left: 0; 
+            width: 100vw; 
+            height: 100vh;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(6px);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .modal-box {
+            background: #FFFFFF;
+            padding: 40px;
+            border-radius: 16px;
+            text-align: center;
+            box-shadow: 0 15px 35px rgba(0,0,0,0.2);
+            min-width: 320px;
+            transform: scale(0.9);
+            transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .modal-overlay.active .modal-box {
+            transform: scale(1);
+        }
     </style>
 </head>
 <body>
@@ -345,6 +383,10 @@
             <span>RATIO:</span>
             <input type="text" id="custom-ratio" value="4/1" title="Custom Aspect Ratio (e.g., 16/9, 4/1)">
             <button style="margin-left:auto; padding:4px 8px; border:none; border-radius:4px; background:#fff; font-family:'Poppins'; font-weight:700; cursor:pointer;" onclick="applySettings()">APPLY</button>
+        </div>
+        <div class="settings-row">
+            <span>FPS:</span>
+            <input type="number" id="custom-fps" value="60" title="Frames Per Second" style="width: 50px;">
         </div>
     </div>
 
@@ -381,8 +423,6 @@
 
         </div>
     </div>
-
-  
 
     <div class="control-bar" id="control-bar">
         <div class="control-block" onclick="previewEngine('yt')">
@@ -425,6 +465,16 @@
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M5.5 3.21V20.8L11.4 15H18.71L5.5 3.21Z" fill="#000000" stroke="#FFFFFF" stroke-width="1.5" stroke-linejoin="round"/>
         </svg>
+    </div>
+
+    <div class="modal-overlay" id="post-record-modal">
+        <div class="modal-box">
+            <h2 style="color: #0F0F0F; margin-bottom: 15px; font-weight: 800;">Animation is complete!</h2>
+            <div class="action-row" style="justify-content: center; margin-top: 25px;">
+                <button class="action-btn btn-yt" id="download-video-btn" style="min-width: 150px;" onclick="downloadRecordedVideo()">Download Video</button>
+                <button class="action-btn" style="background:#F2F2F2; color:#0F0F0F; min-width: 100px;" onclick="closeModal()">Close</button>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -635,25 +685,40 @@
             await delay(500); 
         }
 
-        // 4. Automated Recording Engine (4K, 60fps, MP4/WebM, 100 Mbps Bitrate)
+        // 4. Internal Canvas Rendering & MediaRecorder Engine
         let mediaRecorder;
         let recordedChunks = [];
+        let isRecordingCanvas = false;
+        
+        // Video State Variables
+        let finalVideoUrl = "";
+        let finalVideoExt = "";
+        let finalVideoType = "";
 
         async function startAutomatedRecording(type) {
             try {
                 const reqWidth = parseInt(document.getElementById('res-width').value) || 3840;
                 const reqHeight = parseInt(document.getElementById('res-height').value) || 2160;
+                const reqFps = parseInt(document.getElementById('custom-fps').value) || 60;
 
-                // Prompts user for Screen Selection. Essential for capturing high-res DOM natively.
-                const stream = await navigator.mediaDevices.getDisplayMedia({
-                    video: {
-                        displaySurface: "browser",
-                        frameRate: { ideal: 60, max: 120 },
-                        width: { ideal: reqWidth },
-                        height: { ideal: reqHeight }
-                    },
-                    audio: false
-                });
+                // Hide UI elements to keep clean Green Screen and lock pointer events
+                document.getElementById('control-bar').style.opacity = '0';
+                document.getElementById('control-bar').style.pointerEvents = 'none';
+                document.getElementById('settings-panel').style.opacity = '0';
+                document.getElementById('settings-panel').style.pointerEvents = 'none';
+                document.getElementById('fps-counter').style.opacity = '0';
+
+                // Prepare Hidden Render Canvas
+                let renderCanvas = document.getElementById('render-canvas');
+                if (!renderCanvas) {
+                    renderCanvas = document.createElement('canvas');
+                    renderCanvas.id = 'render-canvas';
+                    renderCanvas.style.display = 'none';
+                    document.body.appendChild(renderCanvas);
+                }
+                renderCanvas.width = reqWidth;
+                renderCanvas.height = reqHeight;
+                const ctx = renderCanvas.getContext('2d');
 
                 // Attempt best format. MP4 if available, otherwise high-bitrate WebM
                 let options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 100000000 };
@@ -663,6 +728,8 @@
                     options.mimeType = 'video/webm;codecs=vp8,opus';
                 }
 
+                // Setup Capture Stream
+                const stream = renderCanvas.captureStream(reqFps);
                 mediaRecorder = new MediaRecorder(stream, options);
                 recordedChunks = [];
 
@@ -672,39 +739,58 @@
 
                 mediaRecorder.onstop = () => {
                     const blob = new Blob(recordedChunks, { type: options.mimeType });
-                    const url = URL.createObjectURL(blob);
-                    
-                    // Auto-Download
-                    const a = document.createElement('a');
-                    a.style.display = 'none';
-                    a.href = url;
-                    const ext = options.mimeType.includes('mp4') ? 'mp4' : 'mp4'; // Forcing .mp4 extension output
-                    a.download = `TZERONE_4K_HDR_${type.toUpperCase()}.${ext}`;
-                    document.body.appendChild(a);
-                    a.click();
-                    
-                    setTimeout(() => {
-                        document.body.removeChild(a);
-                        URL.revokeObjectURL(url);
-                    }, 100);
+                    finalVideoUrl = URL.createObjectURL(blob);
+                    finalVideoExt = options.mimeType.includes('mp4') ? 'mp4' : 'webm';
+                    finalVideoType = type;
 
                     // Restore UI Elements Post-Recording
                     document.getElementById('control-bar').style.opacity = '1';
+                    document.getElementById('control-bar').style.pointerEvents = 'auto';
                     document.getElementById('settings-panel').style.opacity = '1';
+                    document.getElementById('settings-panel').style.pointerEvents = 'auto';
                     document.getElementById('fps-counter').style.opacity = '1';
                     
+                    // Show post-recording modal instead of downloading immediately
+                    document.getElementById('post-record-modal').classList.add('active');
                 };
 
-                // Hide UI elements to keep clean Green Screen
-                document.getElementById('control-bar').style.opacity = '0';
-                document.getElementById('settings-panel').style.opacity = '0';
-                document.getElementById('fps-counter').style.opacity = '0';
-                
-                
                 resetEngine();
                 switchCard(type);
 
                 mediaRecorder.start();
+                isRecordingCanvas = true;
+
+                // Frame Capture Loop (DOM to Canvas)
+                const captureFrame = async () => {
+                    if (!isRecordingCanvas) return;
+                    try {
+                        const tempCanvas = await html2canvas(document.body, {
+                            width: window.innerWidth,
+                            height: window.innerHeight,
+                            scale: reqWidth / window.innerWidth, // Scale to output bounds
+                            useCORS: true,
+                            logging: false,
+                            backgroundColor: '#00B140',
+                            ignoreElements: (el) => 
+                                el.id === 'render-canvas' || 
+                                el.id === 'post-record-modal' ||
+                                el.classList.contains('settings-panel') ||
+                                el.classList.contains('control-bar') ||
+                                el.classList.contains('fps-counter')
+                        });
+                        ctx.clearRect(0, 0, reqWidth, reqHeight);
+                        ctx.drawImage(tempCanvas, 0, 0, reqWidth, reqHeight);
+                    } catch (err) {
+                        console.error("Frame capture error:", err);
+                    }
+                    
+                    if (isRecordingCanvas) {
+                        requestAnimationFrame(captureFrame);
+                    }
+                };
+
+                // Kickstart Background Canvas Render
+                captureFrame();
 
                 // 1 Second Pre-Roll Buffer
                 await delay(1000);
@@ -718,17 +804,42 @@
                 await delay(1000);
 
                 // Stop Recording automatically
+                isRecordingCanvas = false;
                 mediaRecorder.stop();
-                stream.getTracks().forEach(track => track.stop());
 
             } catch (err) {
-                console.error("Screen recording access denied or failed: ", err);
-                alert("Please allow screen sharing of this browser tab to render the video.");
-                // Restore UI if failed
+                console.error("Internal recording failed: ", err);
+                alert("An error occurred during internal recording setup.");
+                // Restore UI on failure
                 document.getElementById('control-bar').style.opacity = '1';
+                document.getElementById('control-bar').style.pointerEvents = 'auto';
                 document.getElementById('settings-panel').style.opacity = '1';
+                document.getElementById('settings-panel').style.pointerEvents = 'auto';
                 document.getElementById('fps-counter').style.opacity = '1';
+            }
+        }
+
+        // Post-Recording Custom Modal Logics
+        function closeModal() {
+            document.getElementById('post-record-modal').classList.remove('active');
+        }
+
+        function downloadRecordedVideo() {
+            if (finalVideoUrl) {
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = finalVideoUrl;
+                a.download = `TZERONE_4K_HDR_${finalVideoType.toUpperCase()}.${finalVideoExt}`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
                 
+                // Cleanup URL and auto-close modal 
+                setTimeout(() => {
+                    closeModal();
+                    URL.revokeObjectURL(finalVideoUrl);
+                    finalVideoUrl = "";
+                }, 500);
             }
         }
     </script>
